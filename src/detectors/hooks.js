@@ -4,6 +4,7 @@
 // (`notify` in config.toml) and Gemini CLI (hooks in settings.json).
 import { j, readJson, readText } from '../util/fsx.js';
 import { home } from '../platform.js';
+import { unparseableFinding } from './common.js';
 
 const CMD_CAP = 160;
 const MAX_CMDS = 8;
@@ -27,7 +28,8 @@ function hookFinding(tool, events, file, commands) {
  * so a tool that adopts either shape is read without a code change.
  */
 function fromHooksObject(tool, file) {
-  const { value } = readJson(file);
+  const { value, error } = readJson(file);
+  if (error && error !== 'missing') return [unparseableFinding(file, 'hooks', tool + ' · ' + file, error)];
   const hooks = value && value.hooks;
   if (!hooks || typeof hooks !== 'object') return [];
   const events = [];

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run } from '../src/engine.js';
@@ -170,4 +172,89 @@ test('remediation actions exist for hot findings', async () => {
   const acts = actionsFor(wrapped);
   assert.ok(acts.length >= 2, 'mcp server with secret gets multiple actions');
   assert.ok(acts.some((a) => a.includes('Rotate')), 'secret rotation advised');
+});
+
+// ── Byte-order marks and unparseable configs (reported privately, v0.3.1) ──
+// BOM fixtures are built at test time from an escape sequence so no editor or
+// git setting can silently strip the three bytes from a checked-in file.
+const BOM = '\uFEFF';
+const MCP = JSON.stringify({ mcpServers: { 'local-tools': { command: 'node', args: ['server.js'], env: { MCP_TOKEN: 'sk-FAKE-FIXTURE-0001' } } } });
+const CLAUDE_HOOKS = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node hook.js' }] }] } });
+const CURSOR_HOOKS = JSON.stringify({ version: 1, hooks: { beforeShellExecution: [{ command: 'node y.js' }] } });
+
+function tmpHome(files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'geiger-test-'));
+  for (const [rel, content] of Object.entries(files)) {
+    const p = path.join(root, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content, 'utf8');
+  }
+  process.env.GEIGER_HOME = root;
+  process.env.GEIGER_PLATFORM = 'win32';
+  return root;
+}
+
+test('BOM-prefixed configs are parsed, not dropped: MCP servers, hooks, and the drift alarm', async () => {
+  const { diffResults } = await import('../src/diff.js');
+  const home = tmpHome({
+    '.claude.json': BOM + MCP,
+    '.claude/settings.json': BOM + CLAUDE_HOOKS,
+    '.cursor/hooks.json': BOM + CURSOR_HOOKS,
+    'proj/.cursor/mcp.json': BOM + MCP,
+  });
+  const ctx = { paths: [path.join(home, 'proj')] };
+  try {
+    const r = await run(detectors, ctx);
+    assert.ok(!r.findings.some((f) => f.name.startsWith('unparseable')), 'no BOM file is reported as unparseable');
+    for (const label of ['Claude Code · global', 'Cursor · project']) {
+      const f = r.findings.find((x) => x.name.startsWith('local-tools (' + label));
+      assert.ok(f, 'server from BOM file reported: ' + label);
+      assert.ok(f.exposures.includes('EXECUTES') && f.exposures.includes('HOLDS-SECRETS'), 'exposures computed: ' + label);
+    }
+    assert.ok(r.findings.some((f) => f.name === 'hooks: PreToolUse'), 'claude code hooks read from BOM settings');
+    assert.ok(r.findings.some((f) => f.name === 'Cursor hooks: beforeShellExecution'), 'cursor hooks read from BOM hooks.json');
+
+    // The drift alarm must see a hook that arrives in a BOM'd file.
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}');
+    const base = JSON.parse(JSON.stringify(await run(detectors, ctx)));
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), BOM + CLAUDE_HOOKS);
+    const d = diffResults(base, await run(detectors, ctx));
+    assert.ok(d.added.some((f) => f.name === 'hooks: PreToolUse'), 'BOM hook shows as appeared');
+    assert.ok(d.newHot >= 1, 'strict drift gate trips on the BOM hook');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('unparseable configs stay visible, are shape-scanned, and never echo file content', async () => {
+  const home = tmpHome({
+    // unquoted value: V8's "Unexpected token" message would quote it
+    'proj/.cursor/mcp.json': '{"mcpServers":{"t":{"command":"node","env":{"MCP_TOKEN": opaquesecretvalue123, "K":"sk-ant-fixture00000000000000"}}}}',
+    '.claude/settings.json': '{"hooks": {"PreToolUse": [ oops ]}}',
+    '.cursor/hooks.json': '{"hooks": { broken',
+  });
+  try {
+    const r = await run(detectors, { paths: [path.join(home, 'proj')] });
+    const mcp = r.findings.find((f) => f.name.startsWith('unparseable config (Cursor · project'));
+    assert.ok(mcp, 'unparseable MCP config reported');
+    assert.ok(mcp.exposures.includes('HOLDS-SECRETS'), 'unparseable config shape-scanned for credentials');
+    assert.ok(mcp.notes.some((n) => n.includes('appears to declare MCP servers')), 'declared servers called out');
+    assert.ok(r.findings.some((f) => f.name.startsWith('unparseable config (Claude Code settings')), 'unparseable claude settings no longer silent');
+    assert.ok(r.findings.some((f) => f.name.startsWith('unparseable config (Cursor · ')), 'unparseable cursor hooks no longer silent');
+    // Deliberately NOT passed through redact(): the report must be clean on its own.
+    const raw = JSON.stringify(r);
+    assert.ok(!raw.includes('opaquesecr'), 'parse error text never carries config content');
+    assert.ok(!raw.includes('sk-ant-fixture'), 'shape-scanned credential value absent');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('tolerant parser: leading BOM, and error labels carry location only', async () => {
+  const { parseJsonTolerant } = await import('../src/util/fsx.js');
+  assert.deepEqual(parseJsonTolerant(BOM + '{"a":1}').value, { a: 1 });
+  assert.deepEqual(parseJsonTolerant(BOM + '{"a":1, // c\n}').value, { a: 1 }, 'BOM does not defeat the comment/trailing-comma pass');
+  const bad = parseJsonTolerant('{"k": secretish}');
+  assert.match(bad.error, /^unparseable JSON/);
+  assert.ok(!bad.error.includes('secretish'), 'no content in the error label');
 });

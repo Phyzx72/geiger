@@ -25,9 +25,14 @@ a machine and reports what each can touch. Published as `geiger-scan` on npm
    small; a reader should manage the whole thing in one sitting.
 5. **Never crash.** Detectors run inside try/catch in `engine.run()`;
    failures become `diagnostics` entries, never swallowed, never fatal.
-   File readers in `util/fsx.js` never throw; `parseJsonTolerant` handles
-   comments, trailing commas, and lone Windows backslashes (documented
-   `\t`-ambiguity caveat).
+   File readers in `util/fsx.js` never throw; `readText` strips a leading
+   UTF-8 BOM (Windows tools write one by default — a BOM'd config once
+   vanished from reports); `parseJsonTolerant` handles comments, trailing
+   commas, and lone Windows backslashes (documented `\t`-ambiguity caveat).
+   Parse errors are labeled by location only: V8's "Unexpected token"
+   messages quote file text, which can be part of a credential. Every
+   detector that reads a JSON config must turn a parse error into
+   `common.js#unparseableFinding`, never skip the file.
 6. **Honest labels.** Exposure labels (EXECUTES, HOLDS-SECRETS,
    BROAD-FILESYSTEM, BROAD-WEB, NETWORK, UNKNOWN-ORIGIN) claim only what a
    config proves. Partially-parseable formats (TOML, JetBrains XML) are

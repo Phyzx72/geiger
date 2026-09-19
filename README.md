@@ -172,8 +172,12 @@ Stated up front, because a scanner you overtrust is worse than no scanner:
   a plugin actually did — only what its position allows.
 - It cannot judge whether a package is malicious — only where it came from
   and what it can reach. Origin ≠ trustworthiness.
-- Partially-parseable formats (TOML configs) are scanned by shape and
-  flagged with reduced confidence rather than skipped.
+- Partially-parseable formats (TOML configs) and JSON configs that fail to
+  parse are still reported: scanned for credential shapes, flagged with
+  reduced confidence, and called out when they appear to declare servers or
+  hooks — never silently skipped. Their individual servers and hooks are not
+  listed until the file parses, so treat an "unparseable config" line as
+  something to open by hand.
 - AI browsers and desktop apps are reported by **presence** with
   medium confidence; their capabilities are inherent to the product, not
   read from a config. Profile paths for Dia and ChatGPT Atlas (macOS) are

@@ -2,9 +2,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Read a file as UTF-8, or null. Never throws. */
+/**
+ * Read a file as UTF-8, or null. Never throws. A leading byte-order mark is
+ * dropped: Notepad, older Visual Studio and PowerShell 5.1 write one by
+ * default, and JSON.parse rejects it — a BOM'd config must not become an
+ * invisible one.
+ */
 export function readText(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+  try { return stripBom(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
+function stripBom(text) {
+  return typeof text === 'string' ? text.replace(/^\uFEFF/, '') : text;
 }
 
 /** True if a path exists. Never throws. */
@@ -29,6 +38,7 @@ export function isDir(p) {
  */
 export function parseJsonTolerant(text) {
   if (text == null) return { value: null, error: 'missing' };
+  text = stripBom(text);
   try {
     return { value: JSON.parse(text), error: null };
   } catch {
@@ -46,10 +56,24 @@ export function parseJsonTolerant(text) {
         const fixedSlashes = text.replace(/\\(?![\\/"bfnrtu])/g, '\\\\');
         return { value: JSON.parse(fixedSlashes), error: null };
       } catch {
-        return { value: null, error: 'unparseable: ' + String(e2.message).slice(0, 80) };
+        return { value: null, error: parseErrorLabel(e2) };
       }
     }
   }
+}
+
+/**
+ * A parse-error label that carries a location, never content. V8's
+ * "Unexpected token" messages quote the text around the error — in a config,
+ * that can be part of a credential value, so the message text itself must
+ * never reach a report.
+ */
+function parseErrorLabel(e) {
+  const msg = String((e && e.message) || '');
+  const lc = /line (\d+) column (\d+)/.exec(msg);
+  if (lc) return `unparseable JSON (line ${lc[1]}, column ${lc[2]})`;
+  const pos = /at position (\d+)/.exec(msg);
+  return pos ? `unparseable JSON (byte ${pos[1]})` : 'unparseable JSON';
 }
 
 /** Read + tolerant-parse a JSON file. Returns { value, error, file }. */

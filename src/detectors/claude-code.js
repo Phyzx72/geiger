@@ -3,7 +3,7 @@
 // and the current project's .mcp.json / .claude/settings.json.
 import { j, readJson, listDir, isDir, exists } from '../util/fsx.js';
 import { home } from '../platform.js';
-import { findingsFromMcpFile } from './common.js';
+import { findingsFromMcpFile, unparseableFinding } from './common.js';
 import { scanEnvObject } from '../redact.js';
 import { assessMcpServer } from '../engine.js';
 
@@ -28,6 +28,7 @@ export default {
       notes: ['a coding agent that runs shell commands as this user'],
     });
 
+    if (cfg.error && cfg.error !== 'missing') out.push(unparseableFinding(globalCfg, 'claude-code', 'Claude Code · global', cfg.error));
     if (cfg.value) {
       for (const [name, server] of Object.entries(cfg.value.mcpServers || {})) {
         const f = assessMcpServer(name, server, globalCfg, 'claude-code', 'Claude Code · global');
@@ -51,6 +52,7 @@ export default {
     for (const sf of [j(root, 'settings.json'), j(root, 'settings.local.json'),
                       ...projDirs.flatMap((d) => [j(d, '.claude', 'settings.json'), j(d, '.claude', 'settings.local.json')])]) {
       const s = readJson(sf);
+      if (s.error && s.error !== 'missing') { out.push(unparseableFinding(sf, 'claude-code', 'Claude Code settings · ' + sf, s.error)); continue; }
       if (!s.value) continue;
       const hooks = s.value.hooks || {};
       const hookEvents = Object.keys(hooks);
@@ -78,6 +80,7 @@ export default {
 
     // plugins / skills / agents inventories
     const inv = readJson(j(root, 'plugins', 'installed_plugins.json'));
+    if (inv.error && inv.error !== 'missing') out.push(unparseableFinding(inv.file, 'claude-code', 'Claude Code plugin inventory', inv.error));
     if (inv.value && inv.value.plugins) {
       for (const [key, installs] of Object.entries(inv.value.plugins)) {
         const [pluginName, marketplace] = key.split('@');
