@@ -69,6 +69,8 @@ Real output from a real machine (values redacted — see below).
 | **AI apps & IDEs** | Cursor, Windsurf, Zed, Claude Desktop, ChatGPT Desktop, Codex desktop app — reported by presence, so an installed client with zero MCP servers still shows up |
 | **Other agents** | Codex CLI, Gemini CLI, Kilo CLI, Grok Build, Aider, OpenCode, Qwen Code, DeepSeek Harness, Continue, GitHub Copilot CLI, Goose, JetBrains Junie, Open Interpreter, LM Studio, Ollama |
 | **Hooks** | Claude Code (settings), Cursor (`hooks.json`), Codex (`notify` in `config.toml`), Gemini CLI (settings) — the commands are listed, because hooks run with no prompt |
+| **Git hooks** | live hooks in `.git/hooks` (samples ignored), `core.hooksPath` redirects, and merge drivers — git runs these itself, and agent tooling installs itself here |
+| **Skill & subagent text** | what a skill actually says: its description, instruction text that tries to override the agent or hide work from you, commands with a hostile shape, and credential shapes — a name in a directory listing tells you nothing |
 | **Editor extensions** | AI extensions in VS Code / Insiders / Cursor |
 | **JetBrains IDEs** | AI Assistant / MCP settings presence per product (the settings live inside the IDE — geiger points you at the right screen) |
 | **Global CLIs** | agent packages in global npm roots (read directly — npm is never executed) |
@@ -178,6 +180,12 @@ Stated up front, because a scanner you overtrust is worse than no scanner:
   hooks — never silently skipped. Their individual servers and hooks are not
   listed until the file parses, so treat an "unparseable config" line as
   something to open by hand.
+- Hook bodies and skill text are matched by **shape**. A flagged line means
+  "open this by hand", never "this is malicious", and the flags are
+  heuristics: a hostile file written carefully enough will not trip them.
+  Nothing geiger reads is ever executed.
+- Git hooks are read only for the directories you scan (the current directory,
+  plus any `--path`), not for every repo on the machine.
 - AI browsers and desktop apps are reported by **presence** with
   medium confidence; their capabilities are inherent to the product, not
   read from a config. Profile paths for Dia and ChatGPT Atlas (macOS) are

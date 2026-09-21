@@ -9,6 +9,7 @@ import jetbrains from './jetbrains.js';
 import aiApps from './ai-apps.js';
 import aiBrowsers from './ai-browsers.js';
 import hooks from './hooks.js';
+import gitHooks from './git-hooks.js';
 
 export const detectors = [
   claudeCode,
@@ -16,6 +17,7 @@ export const detectors = [
   aiApps,
   otherAgents,
   hooks,
+  gitHooks,
   vscodeExtensions,
   npmGlobal,
   aiBrowsers,

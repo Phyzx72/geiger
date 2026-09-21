@@ -6,6 +6,7 @@ import { home } from '../platform.js';
 import { findingsFromMcpFile, unparseableFinding } from './common.js';
 import { scanEnvObject } from '../redact.js';
 import { assessMcpServer } from '../engine.js';
+import { inspectSkill } from '../skill-scan.js';
 
 export default {
   id: 'claude-code',
@@ -94,15 +95,24 @@ export default {
         });
       }
     }
-    for (const [dir, kind, note] of [[j(root, 'skills'), 'skill', 'instructions loaded into the agent'], [j(root, 'agents'), 'config', 'custom subagent definition']]) {
+    // Skills and subagent definitions are instructions the agent loads and
+    // follows, so the text is the payload — read it, don't just list the name.
+    const skillRoots = [[j(root, 'skills'), 'skill', 'instructions loaded into the agent'],
+                        [j(root, 'agents'), 'config', 'custom subagent definition'],
+                        ...projDirs.flatMap((d) => [[j(d, '.claude', 'skills'), 'skill', 'project skill — instructions loaded into the agent']])];
+    for (const [dir, kind, note] of skillRoots) {
       if (!isDir(dir)) continue;
       for (const name of listDir(dir).filter((n) => !n.startsWith('.')).slice(0, 50)) {
+        const path = j(dir, name);
+        const s = inspectSkill(path);
         out.push({
           detector: 'claude-code', kind, name,
-          origin: { type: 'local', ref: j(dir, name) },
-          exposures: [],
-          evidence: [{ file: j(dir, name), note }],
+          origin: { type: 'local', ref: path },
+          exposures: s.secrets.length ? ['HOLDS-SECRETS'] : [],
+          evidence: [{ file: s.file || path, note }],
+          secrets: s.secrets,
           confidence: 'high',
+          notes: s.notes,
         });
       }
     }

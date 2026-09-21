@@ -56,6 +56,23 @@ a machine and reports what each can touch. Published as `geiger-scan` on npm
   `context_servers`, `mcp`).
 - `src/redact.js` — shape regexes, `classifyValue`, `scanEnvObject` (key-name
   heuristic), `scanText`, `redact()`.
+- `src/patterns.js` — shape patterns for text geiger reads but never runs:
+  `RISKY_COMMANDS` (pipe-to-shell, base64 exec, bare-IP endpoint, credential
+  file read, history rewrite) and `STEERING_TEXT` (instruction override,
+  hide-from-user, exfiltration, approval bypass). A hit is a note, never a
+  verdict; keep the lists short and keep a benign twin in the tests so a new
+  pattern cannot silently start false-positiving.
+- `src/skill-scan.js` — `inspectSkill(dir)` reads a skill's instruction file
+  (SKILL.md and friends), folds YAML block-scalar descriptions
+  (`description: >` — reading line one yields a useless `>`), and returns
+  notes + shape-only secrets. The body is never copied into a report.
+- `src/detectors/git-hooks.js` — `.git/hooks` (never `*.sample`),
+  `core.hooksPath`, and `[merge "x"] driver` commands. `programsIn()` reports
+  the programs a hook invokes rather than its first line, because real hooks
+  open with guard clauses: it skips comments, heredoc bodies, multi-line
+  `python -c "..."` payloads and redirections. Git fixtures cannot be checked
+  in (git refuses any path containing a `.git` component) — build them in a
+  temp dir inside the test.
 - `src/platform.js` — all per-OS paths, honoring `GEIGER_HOME` /
   `GEIGER_PLATFORM` env for tests. Detectors stay platform-agnostic.
 - `src/diff.js` — baseline comparison; identity = detector|kind|name|origin;

